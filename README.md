@@ -1,1 +1,3 @@
 # signals
+
+pip install ccxt
