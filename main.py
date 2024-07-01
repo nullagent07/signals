@@ -2,7 +2,7 @@ import ccxt
 import pandas as pd
 import time
 from datetime import datetime, timedelta, timezone
-
+import talib
 # Инициализация биржи с использованием ваших API ключей
 exchange = ccxt.bybit({
     'apiKey': '1VNiNtRcjuO1mmrrmj',
