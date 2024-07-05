@@ -1,0 +1,104 @@
+import ccxt.async_support as ccxt  # Используем асинхронную версию ccxt
+import pandas as pd
+import numpy as np
+import asyncio
+import talib
+
+def calculate_atr(df, period=14):
+    df['ATR'] = talib.ATR(df['high'], df['low'], df['close'], timeperiod=period)
+    return df['ATR']
+
+def calculate_adx(df, period=14):
+    df['ADX'] = talib.ADX(df['high'], df['low'], df['close'], timeperiod=period)
+    return df['ADX']
+
+def calculate_bollinger_bands(df, period=20, std_dev=2):
+    upper_band, middle_band, lower_band = talib.BBANDS(df['close'], timeperiod=period, nbdevup=std_dev, nbdevdn=std_dev, matype=0)
+    df['Upper Band'] = upper_band
+    df['Middle Band'] = middle_band
+    df['Lower Band'] = lower_band
+    return df[['Upper Band', 'Lower Band']]
+
+def calculate_rsi(df, period=14):
+    df['RSI'] = talib.RSI(df['close'], timeperiod=period)
+    return df['RSI']
+
+def calculate_correlation(df, period=14):
+    df['Correlation'] = df['close'].rolling(window=period).corr(df['close'].shift(1))
+    return df['Correlation']
+
+def calculate_obv(df):
+    df['OBV'] = talib.OBV(df['close'], df['volume'])
+    return df['OBV']
+
+def calculate_cmf(df, period=20):
+    money_flow_multiplier = ((df['close'] - df['low']) - (df['high'] - df['close'])) / (df['high'] - df['low'])
+    money_flow_volume = money_flow_multiplier * df['volume']
+    df['CMF'] = money_flow_volume.rolling(window=period).sum() / df['volume'].rolling(window=period).sum()
+    return df['CMF']
+
+def detect_volume_anomalies(df, threshold=2):
+    volume_mean = df['volume'].mean()
+    volume_std = df['volume'].std()
+    df['Volume Anomaly'] = df['volume'] > (volume_mean + threshold * volume_std)
+    return df['Volume Anomaly']
+
+def is_sideways_trend(df):
+    atr = calculate_atr(df)
+    adx = calculate_adx(df)
+    bollinger_bands = calculate_bollinger_bands(df)
+    rsi = calculate_rsi(df)
+    correlation = calculate_correlation(df)
+
+    is_sideways = (atr < atr.mean()) & (adx < 20) & (correlation < 0.2) & (rsi.between(30, 70))
+    return is_sideways
+
+async def fetch_futures_data(exchange, symbol, timeframe='1h', limit=100):
+    ohlcv = await exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+    return symbol, df
+
+async def check_sideways_trend_for_symbol(exchange, symbol):
+    symbol, df = await fetch_futures_data(exchange, symbol)
+    if is_sideways_trend(df).any():
+        return symbol, df
+    return symbol, None
+
+async def main():
+    # Initialize exchange
+    exchange = ccxt.bybit()
+
+    # Fetch all futures markets (not async)
+    markets = await exchange.load_markets()
+
+    # Filter for perpetual contracts nominated in USDT
+    futures_symbols = [symbol for symbol, market in markets.items() if market['type'] == 'swap' and market['quote'] == 'USDT']
+    
+    # Check for sideways trends asynchronously
+    tasks = [check_sideways_trend_for_symbol(exchange, symbol) for symbol in futures_symbols]
+    results = await asyncio.gather(*tasks)
+    
+    # Filter results to get only those symbols that are in a sideways trend
+    sideways_trends = {symbol: df for symbol, df in results if df is not None}
+    
+    # Display results
+    for symbol, df in sideways_trends.items():
+        print(f"Sideways trend detected for {symbol}")
+        print(df.tail())
+
+        # Additional Analysis
+        df['OBV'] = calculate_obv(df)
+        df['CMF'] = calculate_cmf(df)
+        df['Volume Anomaly'] = detect_volume_anomalies(df)
+        
+        if df['Volume Anomaly'].iloc[-1]:  # Check if the latest volume is an anomaly
+            print(f"Volume anomaly detected for {symbol}")
+            print(df[['timestamp', 'volume', 'Volume Anomaly']].tail())
+
+    # Ensure resources are properly released if close method exists
+    if hasattr(exchange, 'close'):
+        await exchange.close()
+
+if __name__ == "__main__":
+    asyncio.run(main())
